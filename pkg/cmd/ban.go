@@ -170,7 +170,7 @@ func Ban(ctx *clicontext.CommandContext, runForm runFormFunc, args ...string) er
 	if len(cfgMapContent) == 0 {
 		form := huh.NewForm(huh.NewGroup(huh.NewInput().
 			Title("Provide Ban Reason ").
-			Prompt(": ").
+			Prompt("> ").
 			Value(&banReason)))
 		if err := runForm(form); err != nil {
 			return err
