@@ -50,7 +50,7 @@ func getValuesFromConfigMap(ctx *clicontext.CommandContext) ([]Menu, error) {
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("failed to get ConfigMap: %w", err)
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func getValuesFromConfigMap(ctx *clicontext.CommandContext) ([]Menu, error) {
 }
 
 // BanMenu displays an interactive menu for selecting banning reasons
-func BanMenu(cfgMapContent []Menu) (*BanInfo, error) {
+func BanMenu(runForm runFormFunc, cfgMapContent []Menu) (*BanInfo, error) {
 	banInfo := &BanInfo{}
 
 	// Map to store user's answers
@@ -81,13 +81,13 @@ func BanMenu(cfgMapContent []Menu) (*BanInfo, error) {
 				options[i] = huh.Option[string]{Key: opt, Value: opt}
 			}
 
-			form := huh.NewSelect[string]().
+			form := huh.NewForm(huh.NewGroup(huh.NewSelect[string]().
 				Title(item.Description).
 				Options(options...).
-				Value(&choice)
+				Value(&choice)))
 
-			if err := form.Run(); err != nil {
-				return nil, fmt.Errorf("failed to show interactive menu: %w", err)
+			if err := runForm(form); err != nil {
+				return nil, err
 			}
 
 			answers[item.Kind] = choice
@@ -116,6 +116,8 @@ func BanMenu(cfgMapContent []Menu) (*BanInfo, error) {
 
 }
 
+type runFormFunc func(form *huh.Form) error
+
 func NewBanCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ban <usersignup-name> [ban-reason]",
@@ -128,7 +130,12 @@ an interactive menu for selection. If the ConfigMap doesn't exist, the ban reaso
 		RunE: func(cmd *cobra.Command, args []string) error {
 			term := ioutils.NewTerminal(cmd.InOrStdin, cmd.OutOrStdout)
 			ctx := clicontext.NewCommandContext(term, client.DefaultNewClient)
-			return Ban(ctx, args...)
+			return Ban(ctx, func(form *huh.Form) error {
+				if err := form.Run(); err != nil {
+					return fmt.Errorf("failed to show interactive menu: %w", err)
+				}
+				return nil
+			}, args...)
 		},
 	}
 }
@@ -140,7 +147,7 @@ type BanInfo struct {
 	DetectionMechanism     string `json:"detectionMechanism"`
 }
 
-func Ban(ctx *clicontext.CommandContext, args ...string) error {
+func Ban(ctx *clicontext.CommandContext, runForm runFormFunc, args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("UserSignup name is required")
 	}
@@ -148,25 +155,31 @@ func Ban(ctx *clicontext.CommandContext, args ...string) error {
 	userSignupName := args[0]
 	var banReason string
 
-	if len(args) == 2 {
-		// Traditional usage: both usersignup name and ban reason provided
-		banReason = args[1]
+	//if len(args) == 2 {
+	//	// Traditional usage: both usersignup name and ban reason provided
+	//	banReason = args[1]
+	//} else {
+	// Interactive mode: only usersignup name provided, need to get reason from ConfigMap menu
+	ctx.Printlnf("No ban reason provided. Checking for available reasons from ConfigMap...")
+
+	cfgMapContent, err := getValuesFromConfigMap(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load banning reasons from ConfigMap: %w", err)
+	}
+
+	if len(cfgMapContent) == 0 {
+		form := huh.NewForm(huh.NewGroup(huh.NewInput().
+			Title("Provide Ban Reason ").
+			Prompt("> ").
+			Value(&banReason)))
+		if err := runForm(form); err != nil {
+			return err
+		}
 	} else {
-		// Interactive mode: only usersignup name provided, need to get reason from ConfigMap menu
-		ctx.Printlnf("No ban reason provided. Checking for available reasons from ConfigMap...")
-
-		cfgMapContent, err := getValuesFromConfigMap(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to load banning reasons from ConfigMap: %w", err)
-		}
-
-		if len(cfgMapContent) == 0 {
-			return fmt.Errorf("no banning reasons found in ConfigMap 'banning-reasons' in toolchain-host-operator namespace. Please provide a ban reason as second argument or create the 'banning-reasons' ConfigMap with banning reasons in the toolchain-host-operator namespace")
-		}
 
 		ctx.Printlnf("Opening interactive menu...")
 
-		banInfo, err := BanMenu(cfgMapContent)
+		banInfo, err := BanMenu(runForm, cfgMapContent)
 		if err != nil {
 			return fmt.Errorf("failed to collect banning information: %w", err)
 		}
